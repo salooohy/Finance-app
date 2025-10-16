@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+myenv/
+myen/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Data files (sensitive)
+*.json
+transactions_data.json
+categories.json
+
+# Excel files
+*.xlsx
+*.xls
+master_finance_tracker.xlsx
+
+# CSV files (processed)
+*_cleaned.csv
+*_cibc_cleaned.csv
+*_amex_cleaned.csv
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Bank statements (sensitive data)
+Bank_statements/
+PROCESSED/
