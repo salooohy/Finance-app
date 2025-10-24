@@ -96,8 +96,17 @@ def create_master_excel():
         # Group by month
         monthly_outflow = outflow_df.groupby("Month")["Outflow"].sum().reset_index()
         monthly_inflow = inflow_df.groupby("Month")["Inflow"].sum().reset_index()
+        
+        # Rename columns for consistency
+        monthly_outflow = monthly_outflow.rename(columns={"Outflow": "Amount"})
+        monthly_inflow = monthly_inflow.rename(columns={"Inflow": "Amount"})
+        
     else:
         # Legacy format - treat all amounts as outflows
+        if "Amount" not in df.columns:
+            st.error("❌ No Amount column found in the data. Cannot create master Excel file.")
+            return
+            
         outflow_df = df.copy()
         outflow_df["Amount"] = outflow_df["Amount"].abs()  # Make positive for display
         
@@ -226,6 +235,10 @@ def load_transactions(file):
     try:
         df = pd.read_csv(file)
         
+        # Convert Date column to datetime if it exists
+        if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        
         # Handle different CSV formats
         if "Inflow" in df.columns and "Outflow" in df.columns:
             # New format with separate Inflow/Outflow columns
@@ -264,16 +277,27 @@ def main():
     df = pd.DataFrame()  # Default empty DataFrame
 
     if uploaded_file is not None:
-        df = load_transactions(uploaded_file)
+        # create a simple token that changes when the uploaded file changes
+        upload_token = f"{uploaded_file.name}:{getattr(uploaded_file, 'size', None)}"
+        should_load = (
+            "current_session_df" not in st.session_state
+            or st.session_state.current_session_df.empty
+            or st.session_state.get("upload_token") != upload_token
+        )
 
-        if df is not None:
-            st.session_state.current_session_df = df.copy()
-            st.success(f"✅ Loaded {len(df)} transactions for this session")
+        if should_load:
+            df = load_transactions(uploaded_file)
+            if df is not None:
+                st.session_state.current_session_df = df.copy()
+                st.session_state.upload_token = upload_token
+                st.success(f"✅ Loaded {len(df)} transactions for this session")
 
     # Show tabs including new Master Tracker tab
-    tab1, tab2, tab3 = st.tabs(["Outflow", "Inflow", "📊 Master Tracker"])
+    tab1, tab2, tab3 = st.tabs(["💸 Outflow", "💰 Inflow", "📊 Master Tracker"])
 
     with tab1:
+        st.subheader("💸 Outflow Transactions (Expenses)")
+        
         new_category = st.text_input("New Category Name")
         add_button = st.button("Add Category")
         
@@ -281,207 +305,420 @@ def main():
             if new_category not in st.session_state.categories:
                 st.session_state.categories[new_category] = []
                 save_categories()
-                st.rerun()
+                st.success(f"✅ Added category: {new_category}")
+                # Don't auto-rerun, let user click Apply Changes manually
 
         # Show current session data for editing
-        if not df.empty:
-            st.subheader("Your Expenses (Current Session)")
-            st.write("💡 **Edit like Excel**: Click any cell to edit directly!")
-            
-            # Add sorting controls
-            col_sort1, col_sort2 = st.columns([1, 3])
-            with col_sort1:
-                sort_by = st.selectbox("Sort by:", ["None", "Category", "Date", "Amount", "Merchant"])
-            with col_sort2:
-                sort_order = st.selectbox("Order:", ["Ascending", "Descending"])
-            
-            # Apply sorting
-            df_sorted = df.copy()
-            if sort_by != "None":
-                ascending = sort_order == "Ascending"
-                if sort_by in df_sorted.columns:
-                    df_sorted = df_sorted.sort_values(by=sort_by, ascending=ascending)
+        # Use session state data if available, otherwise use current df
+        display_df = st.session_state.current_session_df if hasattr(st.session_state, 'current_session_df') and not st.session_state.current_session_df.empty else df
+        
+        if not display_df.empty:
+            # Filter for outflow transactions only
+            if "Inflow" in display_df.columns and "Outflow" in display_df.columns:
+                outflow_df = display_df[display_df["Outflow"] > 0].copy()
+                
+                if not outflow_df.empty:
+                    st.write(f"📊 Found {len(outflow_df)} outflow transactions")
+                    
+                    # Show outflow summary
+                    total_outflow = outflow_df["Outflow"].sum()
+                    st.metric("Total Outflow", f"${total_outflow:,.2f}")
+                    
+                    # Add sorting controls
+                    col_sort1, col_sort2 = st.columns([1, 3])
+                    with col_sort1:
+                        sort_by = st.selectbox("Sort by:", ["None", "Category", "Date", "Outflow", "Merchant"])
+                    with col_sort2:
+                        sort_order = st.selectbox("Order:", ["Ascending", "Descending"])
+                    
+                    # Apply sorting
+                    outflow_df_sorted = outflow_df.copy()
+                    if sort_by != "None":
+                        ascending = sort_order == "Ascending"
+                        if sort_by in outflow_df_sorted.columns:
+                            outflow_df_sorted = outflow_df_sorted.sort_values(by=sort_by, ascending=ascending)
 
-            # Only use columns that exist
-            if "Date" in df_sorted.columns:
-                df_sorted["Date"] = pd.to_datetime(df_sorted["Date"], errors="coerce")
-            available_cols = df_sorted.columns.tolist()
-            
-            # Show Inflow/Outflow columns if they exist, otherwise show Amount
-            if "Inflow" in available_cols and "Outflow" in available_cols:
-                display_cols = [col for col in ["Date", "Description", "Merchant", "Inflow", "Outflow", "Category"] if col in available_cols]
+                    # Only use columns that exist
+                    if "Date" in outflow_df_sorted.columns:
+                        outflow_df_sorted["Date"] = pd.to_datetime(outflow_df_sorted["Date"], errors="coerce")
+                    
+                    display_cols = [col for col in ["Date", "Description", "Merchant", "Outflow", "Category"] if col in outflow_df_sorted.columns]
+                else:
+                    st.info("No outflow transactions found in current session data.")
+                    display_cols = []
             else:
-                display_cols = [col for col in ["Date", "Description", "Merchant", "Amount", "Category"] if col in available_cols]
-
-            # Add a "Delete" column
-            df_sorted["Delete"] = False
-            display_cols.append("Delete")
-
-            # Excel-like editing with better column configuration
-            column_config = {
-                "Date": st.column_config.DateColumn(
-                    "Date", 
-                    format="DD/MM/YYYY",
-                    help="Click to edit date"
-                ),
-                "Description": st.column_config.TextColumn(
-                    "Description",
-                    help="Click to edit description"
-                ),
-                "Merchant": st.column_config.TextColumn(
-                    "Merchant",
-                    help="Click to edit merchant name"
-                ),
-                "Category": st.column_config.SelectboxColumn(
-                    "Category",
-                    options=list(st.session_state.categories.keys()),
-                    help="Click to change category"
-                ),
-                "Delete": st.column_config.CheckboxColumn(
-                    "Delete",
-                    help="Check to delete this transaction"
-                )
-            }
-            
-            # Add amount column configurations based on format
-            if "Inflow" in display_cols and "Outflow" in display_cols:
-                column_config["Inflow"] = st.column_config.NumberColumn(
-                    "Inflow", 
-                    format="%.2f CAD",
-                    help="Click to edit inflow amount",
-                    min_value=0.0,
-                    step=0.01
-                )
-                column_config["Outflow"] = st.column_config.NumberColumn(
-                    "Outflow", 
-                    format="%.2f CAD",
-                    help="Click to edit outflow amount",
-                    min_value=0.0,
-                    step=0.01
-                )
-            elif "Amount" in display_cols:
-                column_config["Amount"] = st.column_config.NumberColumn(
-                    "Amount", 
-                    format="%.2f CAD",
-                    help="Click to edit amount. For splitting: divide by number of people",
-                    min_value=0.0,
-                    step=0.01
-                )
-            
-            edited_df = st.data_editor(
-                df_sorted[display_cols],
-                column_config=column_config,
-                hide_index=True,
-                use_container_width=True,
-                key="category_editor",
-                num_rows="dynamic"  # Allow adding/removing rows
-            )
-
-            # Action buttons
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                save_button = st.button("💾 Apply Changes", type="primary", use_container_width=True)
-            
-            with col2:
-                if st.button("🔄 Reset to Original", use_container_width=True):
-                    st.rerun()
-            
-            with col3:
-                if st.button("📊 Show Summary", use_container_width=True):
-                    st.session_state.show_summary = True
-            
-            with col4:
-                append_button = st.button("📁 Append to Master Data", type="secondary", use_container_width=True)
-
-            if save_button:
-                try:
-                    # Update current session data with edits
-                    # Get indices of transactions to delete
-                    transactions_to_delete = edited_df[edited_df["Delete"] == True].index.tolist()
-                    
-                    if transactions_to_delete:
-                        # Remove transactions from the dataframe
-                        df = df.drop(transactions_to_delete).reset_index(drop=True)
-                        st.session_state.current_session_df = df.copy()
-                        st.success(f"✅ Deleted {len(transactions_to_delete)} transaction(s)")
-                    
-                    # Create a mapping for remaining transactions
-                    # Filter out deleted transactions from edited_df
-                    remaining_df = edited_df[edited_df["Delete"] != True].reset_index(drop=True)
-                    
-                    # Apply changes for remaining transactions
-                    for i, (idx, row) in enumerate(remaining_df.iterrows()):
-                        if i < len(df):
-                            # Update amount
-                            new_amount = row.get("Amount", df.iloc[i]["Amount"])
-                            df.iloc[i, df.columns.get_loc("Amount")] = new_amount
-                            
-                            # Update category
-                            new_category = row["Category"]
-                            if new_category != df.iloc[i]["Category"]:
-                                df.iloc[i, df.columns.get_loc("Category")] = new_category
-                                
-                                # Add merchant to category keywords
-                                merchant = str(row.get("Merchant", "")).strip()
-                                if merchant:
-                                    add_keyword_to_category(new_category, merchant)
-
-                    # Update current session data
-                    st.session_state.current_session_df = df.copy()
-                    st.success("✅ Changes applied successfully!")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error applying changes: {str(e)}")
-                    st.write("Please try again or refresh the page.")
-
-            if append_button:
-                try:
-                    if append_to_persistent_data():
-                        st.success("✅ Current session data appended to master database!")
-                        st.balloons()
-                        # Clear current session data
-                        st.session_state.current_session_df = pd.DataFrame()
-                        st.rerun()
-                    else:
-                        st.error("❌ Failed to append data.")
-                except Exception as e:
-                    st.error(f"❌ Error appending data: {str(e)}")
-
-            # Show summary if requested
-            if st.session_state.get("show_summary", False) or save_button:
-                st.subheader('📊 Expense Summary (Current Session)')
-                category_totals = df.groupby("Category")["Amount"].sum().reset_index()
-                category_totals = category_totals.sort_values("Amount", ascending=False)
+                # Legacy format - show all transactions as outflow
+                st.write("💡 **Edit like Excel**: Click any cell to edit directly!")
                 
-                grand_total = category_totals["Amount"].sum()
+                # Add sorting controls
+                col_sort1, col_sort2 = st.columns([1, 3])
+                with col_sort1:
+                    sort_by = st.selectbox("Sort by:", ["None", "Category", "Date", "Amount", "Merchant"])
+                with col_sort2:
+                    sort_order = st.selectbox("Order:", ["Ascending", "Descending"])
+                
+                # Apply sorting
+                df_sorted = display_df.copy()
+                if sort_by != "None":
+                    ascending = sort_order == "Ascending"
+                    if sort_by in df_sorted.columns:
+                        df_sorted = df_sorted.sort_values(by=sort_by, ascending=ascending)
 
-                # Append grand total as a new row
-                grand_total_row = pd.DataFrame([{"Category": "Total", "Amount": grand_total}])
-                category_totals_with_total = pd.concat([category_totals, grand_total_row], ignore_index=True)
+                # Only use columns that exist
+                if "Date" in df_sorted.columns:
+                    df_sorted["Date"] = pd.to_datetime(df_sorted["Date"], errors="coerce")
+                
+                display_cols = [col for col in ["Date", "Description", "Merchant", "Amount", "Category"] if col in df_sorted.columns]
+                outflow_df_sorted = df_sorted
 
-                # Display summary
-                st.dataframe(
-                    category_totals_with_total, 
-                    column_config={
-                     "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD")   
-                    },
+            if display_cols:  # Only show editor if there are transactions
+                # Add a "Delete" column
+                outflow_df_sorted["Delete"] = False
+                display_cols.append("Delete")
+
+                # Ensure Date column is datetime for editing
+                if "Date" in outflow_df_sorted.columns:
+                    outflow_df_sorted["Date"] = pd.to_datetime(outflow_df_sorted["Date"], errors="coerce")
+
+                # Excel-like editing with better column configuration
+                column_config = {
+                    "Description": st.column_config.TextColumn(
+                        "Description",
+                        help="Click to edit description"
+                    ),
+                    "Merchant": st.column_config.TextColumn(
+                        "Merchant",
+                        help="Click to edit merchant name"
+                    ),
+                    "Category": st.column_config.SelectboxColumn(
+                        "Category",
+                        options=list(st.session_state.categories.keys()),
+                        help="Click to change category"
+                    ),
+                    "Delete": st.column_config.CheckboxColumn(
+                        "Delete",
+                        help="Check to delete this transaction"
+                    )
+                }
+                
+                # Add Date column config only if Date column exists and is datetime
+                if "Date" in outflow_df_sorted.columns and pd.api.types.is_datetime64_any_dtype(outflow_df_sorted["Date"]):
+                    column_config["Date"] = st.column_config.DateColumn(
+                        "Date", 
+                        format="DD/MM/YYYY",
+                        help="Click to edit date"
+                    )
+                
+                # Add amount column configurations based on format
+                if "Outflow" in display_cols:
+                    column_config["Outflow"] = st.column_config.NumberColumn(
+                        "Outflow", 
+                        format="%.2f CAD",
+                        help="Click to edit outflow amount",
+                        min_value=0.0,
+                        step=0.01
+                    )
+                elif "Amount" in display_cols:
+                    column_config["Amount"] = st.column_config.NumberColumn(
+                        "Amount", 
+                        format="%.2f CAD",
+                        help="Click to edit amount. For splitting: divide by number of people",
+                        min_value=0.0,
+                        step=0.01
+                    )
+                
+                edited_df = st.data_editor(
+                    outflow_df_sorted[display_cols],
+                    column_config=column_config,
+                    hide_index=True,
                     use_container_width=True,
-                    hide_index=True
+                    key="outflow_editor"
                 )
+
+                # Action buttons
+                col1, col2, col3, col4 = st.columns(4)
                 
-                # Pie chart
-                fig = px.pie(
-                    category_totals,
-                    values="Amount",
-                    names="Category",
-                    title="Expenses by Category (Current Session)"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                with col1:
+                    save_button = st.button("💾 Apply Changes", type="primary", use_container_width=True)
+                
+                with col2:
+                    if st.button("🔄 Reset to Original", use_container_width=True):
+                        st.rerun()
+                
+                with col3:
+                    if st.button("📊 Show Outflow Summary", use_container_width=True):
+                        st.session_state.show_outflow_summary = True
+                
+                with col4:
+                    append_button = st.button("📁 Append to Master Data", type="secondary", use_container_width=True)
+
+                if save_button:
+                    try:
+                        # 1) Start from the edited grid as the source of truth
+                        edited_df_clean = edited_df.copy()
+
+                        # 2) Separate deletions and keepers using the checkbox column
+                        to_delete_mask = edited_df_clean["Delete"] == True
+                        keep_df = edited_df_clean.loc[~to_delete_mask].drop(columns=["Delete"]).copy()
+
+                        # 3) If you have Outflow/Amount columns, ensure numeric types
+                        for col in ["Outflow", "Amount"]:
+                            if col in keep_df.columns:
+                                keep_df[col] = pd.to_numeric(keep_df[col], errors="coerce").fillna(0.0)
+
+                        # 4) (Optional) add changed merchants into category keyword lists
+                        #    Here we simply go row-by-row and ensure any (Merchant, Category) pairs are learned.
+                        if "Merchant" in keep_df.columns and "Category" in keep_df.columns:
+                            for _, row in keep_df.iterrows():
+                                merchant = str(row.get("Merchant", "")).strip()
+                                cat = row.get("Category", "Uncategorized")
+                                if merchant and cat in st.session_state.categories:
+                                    add_keyword_to_category(cat, merchant)
+
+                        # 5) Rebuild the full current_session_df:
+                        source_df = st.session_state.current_session_df.copy()
+                        if "Inflow" in source_df.columns and "Outflow" in source_df.columns:
+                            df_without_outflow = source_df[source_df["Outflow"] <= 0].copy()
+                            updated_df = pd.concat([df_without_outflow, keep_df], ignore_index=True)
+
+                        else:
+                            # Legacy format: keep_df already represents the edited set
+                            updated_df = keep_df.copy()
+
+                        # 6) Store back to session
+                        st.session_state.current_session_df = updated_df
+
+                        # 7) User feedback
+                        deleted_count = int(to_delete_mask.sum())
+                        if deleted_count > 0:
+                            st.success(f"✅ Deleted {deleted_count} transaction(s)")
+                        st.success("✅ Changes applied successfully!")
+
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Error applying changes: {str(e)}")
+
+                if append_button:
+                    try:
+                        if append_to_persistent_data():
+                            st.success("✅ Current session data appended to master database!")
+                            st.balloons()
+                            # Clear current session data
+                            st.session_state.current_session_df = pd.DataFrame()
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to append data.")
+                    except Exception as e:
+                        st.error(f"❌ Error appending data: {str(e)}")
+
+                # Show outflow summary if requested
+                if st.session_state.get("show_outflow_summary", False) or save_button:
+                    st.subheader('📊 Outflow Summary (Current Session)')
+                    
+                    # Use the current session data for summary
+                    summary_df = st.session_state.current_session_df if hasattr(st.session_state, 'current_session_df') and not st.session_state.current_session_df.empty else df
+                    
+                    # Check if we have the required columns
+                    if "Category" not in summary_df.columns:
+                        st.error("❌ No Category column found. Please ensure your data has been categorized.")
+                        return
+                    
+                    if "Outflow" in summary_df.columns:
+                        # Filter for outflow transactions only
+                        outflow_data = summary_df[summary_df["Outflow"] > 0].copy()
+                        
+                        if not outflow_data.empty:
+                            category_totals = outflow_data.groupby("Category")["Outflow"].sum().reset_index()
+                            category_totals = category_totals.sort_values("Outflow", ascending=False)
+                            
+                            grand_total = category_totals["Outflow"].sum()
+                            
+                            # Append grand total as a new row
+                            grand_total_row = pd.DataFrame([{"Category": "Total", "Outflow": grand_total}])
+                            category_totals_with_total = pd.concat([category_totals, grand_total_row], ignore_index=True)
+
+                            # Display summary
+                            st.dataframe(
+                                category_totals_with_total, 
+                                column_config={
+                                 "Outflow": st.column_config.NumberColumn("Outflow", format="%.2f CAD")   
+                                },
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                            
+                            # Pie chart
+                            fig = px.pie(
+                                category_totals,
+                                values="Outflow",
+                                names="Category",
+                                title="Outflow by Category (Current Session)"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No outflow transactions found.")
+                    elif "Amount" in summary_df.columns:
+                        # Legacy format
+                        category_totals = summary_df.groupby("Category")["Amount"].sum().reset_index()
+                        category_totals = category_totals.sort_values("Amount", ascending=False)
+                        
+                        grand_total = category_totals["Amount"].sum()
+
+                        # Append grand total as a new row
+                        grand_total_row = pd.DataFrame([{"Category": "Total", "Amount": grand_total}])
+                        category_totals_with_total = pd.concat([category_totals, grand_total_row], ignore_index=True)
+
+                        # Display summary
+                        st.dataframe(
+                            category_totals_with_total, 
+                            column_config={
+                             "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD")   
+                            },
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        # Pie chart
+                        fig = px.pie(
+                            category_totals,
+                            values="Amount",
+                            names="Category",
+                            title="Expenses by Category (Current Session)"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.error("❌ No Outflow or Amount column found in the data.")
+        else:
+            st.info("Upload a transaction file to see outflow data.")
 
     with tab2:
-        st.info("Inflow tracking coming soon!")
+        st.subheader("💰 Inflow Transactions (Income)")
+        
+        # Use session state data if available, otherwise use current df
+        display_df_inflow = st.session_state.current_session_df if hasattr(st.session_state, 'current_session_df') and not st.session_state.current_session_df.empty else df
+        
+        if not display_df_inflow.empty:
+            # Filter for inflow transactions only
+            if "Inflow" in display_df_inflow.columns and "Outflow" in display_df_inflow.columns:
+                inflow_df = display_df_inflow[display_df_inflow["Inflow"] > 0].copy()
+                
+                if not inflow_df.empty:
+                    st.write(f"📊 Found {len(inflow_df)} inflow transactions")
+                    
+                    # Show inflow summary
+                    total_inflow = inflow_df["Inflow"].sum()
+                    st.metric("Total Inflow", f"${total_inflow:,.2f}")
+                    
+                    # Display inflow transactions
+                    display_cols = [col for col in ["Date", "Description", "Merchant", "Inflow", "Category"] if col in inflow_df.columns]
+                    
+                    # Add delete column
+                    inflow_df["Delete"] = False
+                    display_cols.append("Delete")
+                    
+                    # Ensure Date column is datetime for editing
+                    if "Date" in inflow_df.columns:
+                        inflow_df["Date"] = pd.to_datetime(inflow_df["Date"], errors="coerce")
+
+                    # Excel-like editing for inflow
+                    column_config = {
+                        "Description": st.column_config.TextColumn("Description"),
+                        "Merchant": st.column_config.TextColumn("Merchant"),
+                        "Inflow": st.column_config.NumberColumn("Inflow", format="%.2f CAD", min_value=0.0, step=0.01),
+                        "Category": st.column_config.SelectboxColumn("Category", options=list(st.session_state.categories.keys())),
+                        "Delete": st.column_config.CheckboxColumn("Delete")
+                    }
+                    
+                    # Add Date column config only if Date column exists and is datetime
+                    if "Date" in inflow_df.columns and pd.api.types.is_datetime64_any_dtype(inflow_df["Date"]):
+                        column_config["Date"] = st.column_config.DateColumn("Date", format="DD/MM/YYYY")
+                    
+                    edited_inflow_df = st.data_editor(
+                        inflow_df[display_cols],
+                        column_config=column_config,
+                        hide_index=True,
+                        use_container_width=True,
+                        key="inflow_editor"
+                    )
+                    
+                    # Action buttons for inflow
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("💾 Save Inflow Changes", type="primary"):
+                            try:
+                                # Simple approach: Create new dataframe with only non-deleted rows
+                                rows_to_keep = []
+                                
+                                for i, (edited_idx, row) in enumerate(edited_inflow_df.iterrows()):
+                                    if row["Delete"] != True:  # Keep non-deleted rows
+                                        # Get the corresponding row from the inflow dataframe
+                                        if i < len(inflow_df):
+                                            original_row = inflow_df.iloc[i].copy()
+                                            
+                                            # Update the original row with any changes from the edited row
+                                            # Update inflow amount
+                                            original_row["Inflow"] = row.get("Inflow", 0)
+                                            
+                                            # Update category
+                                            original_row["Category"] = row.get("Category", original_row.get("Category", "Uncategorized"))
+                                            
+                                            # Add merchant to category keywords if category changed
+                                            merchant = str(row.get("Merchant", "")).strip()
+                                            old_category = inflow_df.iloc[i].get("Category", "Uncategorized")
+                                            new_category = row.get("Category", old_category)
+                                            if merchant and new_category != old_category:
+                                                add_keyword_to_category(new_category, merchant)
+                                            
+                                            rows_to_keep.append(original_row)
+                                
+                                # Create new dataframe with only the rows we want to keep
+                                if rows_to_keep:
+                                    new_inflow_df = pd.DataFrame(rows_to_keep).reset_index(drop=True)
+                                    
+                                    # Count how many were deleted
+                                    deleted_count = len(inflow_df) - len(rows_to_keep)
+                                    
+                                    # Update the main dataframe - remove old inflow transactions and add updated ones
+                                    # Remove all inflow transactions first
+                                    df_without_inflow = display_df_inflow[display_df_inflow["Inflow"] <= 0].copy()
+                                    # Add back the updated inflow transactions
+                                    updated_df_inflow = pd.concat([df_without_inflow, new_inflow_df], ignore_index=True)
+                                    
+                                    # Update session state
+                                    st.session_state.current_session_df = updated_df_inflow.copy()
+                                    
+                                    if deleted_count > 0:
+                                        st.success(f"✅ Deleted {deleted_count} inflow transaction(s)")
+                                    st.success("✅ Inflow changes applied successfully!")
+                                else:
+                                    st.warning("⚠️ All inflow transactions were deleted!")
+                                
+                                st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error applying inflow changes: {str(e)}")
+                                st.write("Please try again or refresh the page.")
+                    
+                    with col2:
+                        if st.button("📊 Inflow Summary"):
+                            # Show inflow by category
+                            inflow_by_category = inflow_df.groupby("Category")["Inflow"].sum().reset_index()
+                            inflow_by_category = inflow_by_category.sort_values("Inflow", ascending=False)
+                            
+                            st.subheader("💰 Inflow by Category")
+                            st.dataframe(
+                                inflow_by_category,
+                                column_config={"Inflow": st.column_config.NumberColumn("Inflow", format="%.2f CAD")},
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                else:
+                    st.info("No inflow transactions found in current session data.")
+            else:
+                st.info("Inflow/Outflow columns not found. Upload a file with separate Inflow/Outflow columns.")
+        else:
+            st.info("Upload a transaction file to see inflow data.")
 
     with tab3:
         st.subheader("📊 Master Finance Tracker")
